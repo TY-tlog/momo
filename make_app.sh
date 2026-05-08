@@ -10,10 +10,25 @@ ICONSET="/tmp/DesktopPet.iconset"
 ICON_SQUARE="/tmp/desktop_pet_icon_1024.png"
 ICNS="/tmp/desktop_pet_icon.icns"
 
-# 1. dog.png 을 정사각형으로 (투명 배경 패딩) → 1024x1024 PNG
+# 1. 펫 이미지를 정사각형으로 (투명 배경 패딩) → 1024x1024 PNG
+#    dog.png 가 있으면 그걸, 없으면 pack leader (dog_jindo.png) 사용.
+ICON_SRC=""
+for cand in "$PROJECT/assets/dog.png" "$PROJECT/assets/dog_jindo.png" \
+            "$PROJECT/assets/dog_yorkie.png" "$PROJECT/assets/dog_bichon.png"; do
+    if [ -f "$cand" ]; then
+        ICON_SRC="$cand"
+        break
+    fi
+done
+if [ -z "$ICON_SRC" ]; then
+    echo "assets/ 에 펫 이미지가 없습니다."
+    echo "먼저 prep_sprite.py 또는 prep_pack_sprites.py 를 실행해 주세요."
+    exit 1
+fi
+echo "Icon source: $ICON_SRC"
 ./venv/bin/python - <<PY
 from PIL import Image
-src = Image.open("$PROJECT/assets/dog.png").convert("RGBA")
+src = Image.open("$ICON_SRC").convert("RGBA")
 size = max(src.size)
 sq = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 sq.paste(src, ((size - src.width) // 2, (size - src.height) // 2), src)

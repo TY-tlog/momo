@@ -4,6 +4,10 @@
     WANDER   기본. 화면 하단을 어슬렁
     EXCITED  CPU > 70%. 빠르게 + 크게 흔들림
     SLEEPING 낮은 CPU 가 일정 시간 지속될 때. 멈춰서 ZZZ
+
+Sprite:
+    한 widget 안에 3마리(요키/진돗개/비숑) 를 같이 그린다.
+    각자 독립된 bob phase 로 갤럽 모션처럼 보이게.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ import math
 import random
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PyQt6.QtCore import QPoint, QPointF, Qt, QTimer
@@ -86,10 +91,9 @@ def _hide_dock_icon() -> None:
 
 
 ASSET_DIR = Path(__file__).parent / "assets"
-SPRITE_PATH = ASSET_DIR / "dog.png"
 
-PET_HEIGHT = 160
-WIDGET_PAD = 40
+PET_HEIGHT = 150          # 가운데 leader 의 기준 높이
+WIDGET_PAD = 30
 TICK_MS = 16
 HW_SAMPLE_MS = 1500
 
@@ -101,11 +105,35 @@ HOT_TEMP_C = 80.0          # CPU temp at which the pet "feels hot"
 WANDER_SPEED_PX_S = 55.0
 EXCITED_SPEED_PX_S = 220.0
 
+# 한 widget 안 3마리 배치 (좌→우).
+# scale: 자기 키 = PET_HEIGHT * scale
+# phase_offset: bob phase 라디안 오프셋 → 갤럽 stagger
+# bob_scale: 점프 크기 보정 (작은 강아지가 더 통통 튀는 느낌)
+PACK_LAYOUT = (
+    {"name": "yorkie", "file": "dog_yorkie.png", "scale": 0.78,
+     "phase_offset": 0.0, "bob_scale": 1.10},
+    {"name": "jindo",  "file": "dog_jindo.png",  "scale": 1.00,
+     "phase_offset": 2.094, "bob_scale": 0.90},   # 2π/3
+    {"name": "bichon", "file": "dog_bichon.png", "scale": 0.80,
+     "phase_offset": 4.189, "bob_scale": 1.15},   # 4π/3
+)
+PACK_GAP = -10  # 살짝 겹치게
+
 
 class State:
     WANDER = "wander"
     EXCITED = "excited"
     SLEEPING = "sleeping"
+
+
+@dataclass
+class PackMember:
+    name: str
+    pixmap: QPixmap
+    x_anchor: int          # widget 안 좌측 x (left-facing 기준)
+    bob_scale: float
+    bob_phase: float = 0.0
+    breath_phase: float = 0.0
 
 
 class StatsBubble(QWidget):
@@ -170,7 +198,7 @@ class Pet(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._init_window()
-        self._load_sprite()
+        self._load_pack()
         self._init_runtime()
         self._init_bubble()
         self._init_tray()
@@ -186,20 +214,45 @@ class Pet(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
-    def _load_sprite(self) -> None:
-        if not SPRITE_PATH.exists():
-            raise FileNotFoundError(
-                f"Sprite missing: {SPRITE_PATH}\n"
-                f"먼저 prep_sprite.py 를 실행해 주세요."
+    def _load_pack(self) -> None:
+        loaded: list[tuple[dict, QPixmap]] = []
+        for spec in PACK_LAYOUT:
+            path = ASSET_DIR / spec["file"]
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"Sprite missing: {path}\n"
+                    f"먼저 prep_pack_sprites.py 를 실행해 주세요."
+                )
+            raw = QPixmap(str(path))
+            if raw.isNull():
+                raise RuntimeError(f"Failed to load: {path}")
+            scaled = raw.scaledToHeight(
+                int(PET_HEIGHT * spec["scale"]),
+                Qt.TransformationMode.SmoothTransformation,
             )
-        raw = QPixmap(str(SPRITE_PATH))
-        if raw.isNull():
-            raise RuntimeError(f"Failed to load: {SPRITE_PATH}")
-        self.sprite = raw.scaledToHeight(
-            PET_HEIGHT, Qt.TransformationMode.SmoothTransformation
-        )
-        w = self.sprite.width() + WIDGET_PAD * 2
-        h = self.sprite.height() + WIDGET_PAD * 2
+            loaded.append((spec, scaled))
+
+        max_h = max(pix.height() for _, pix in loaded)
+        members: list[PackMember] = []
+        x = 0
+        for spec, pix in loaded:
+            members.append(PackMember(
+                name=spec["name"],
+                pixmap=pix,
+                x_anchor=x,
+                bob_scale=spec["bob_scale"],
+                bob_phase=random.random() * math.tau + spec["phase_offset"],
+                breath_phase=random.random() * math.tau,
+            ))
+            x += pix.width() + PACK_GAP
+        x -= PACK_GAP
+        self.pack: list[PackMember] = members
+        self.pack_w = x
+        self.pack_h = max_h
+        self.tray_pix = next(m.pixmap for m in self.pack if m.name == "jindo")
+
+        w = self.pack_w + WIDGET_PAD * 2
+        h = self.pack_h + WIDGET_PAD * 2 + 12  # 점프 머리 위 여유
         self.resize(w, h)
 
     def _init_runtime(self) -> None:
@@ -207,8 +260,6 @@ class Pet(QWidget):
         self.flip = False
         self.pos_f = QPointF(0, 0)
         self.target = QPointF(0, 0)
-        self.bob_phase = random.random() * math.tau
-        self.breath_phase = random.random() * math.tau
         self.last_active = time.time()
         self.rest_until = 0.0
         self.bubble_until = 0.0
@@ -231,7 +282,7 @@ class Pet(QWidget):
 
     def _init_tray(self) -> None:
         self.tray = QSystemTrayIcon(self)
-        icon_pix = self.sprite.scaled(
+        icon_pix = self.tray_pix.scaled(
             32, 32,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
@@ -416,13 +467,19 @@ class Pet(QWidget):
 
         dt = TICK_MS / 1000.0
         hot = self._is_hot()
-        bob_rate = 5.0 if self.state == State.EXCITED else 2.5
-        breath_rate = 4.0 if self.state == State.EXCITED else 2.0
+        # 뛰는 모션을 위해 평소 wander 도 빠른 bob.
+        bob_rate = 9.0 if self.state == State.EXCITED else 6.0
+        breath_rate = 4.0 if self.state == State.EXCITED else 2.5
         if hot:
             breath_rate = max(breath_rate, 3.5)
-            bob_rate = max(bob_rate, 3.0)
-        self.bob_phase += dt * bob_rate
-        self.breath_phase += dt * breath_rate
+            bob_rate = max(bob_rate, 7.0)
+        if self.state == State.SLEEPING:
+            bob_rate = 0.8
+            breath_rate = 1.2
+
+        for m in self.pack:
+            m.bob_phase += dt * bob_rate
+            m.breath_phase += dt * breath_rate
 
         if self.state == State.SLEEPING:
             speed = 0.0
@@ -450,12 +507,9 @@ class Pet(QWidget):
                 )
                 self.flip = dx < 0
 
-        bob_amp = 6.0 if self.state == State.EXCITED else 2.5
-        bob = math.sin(self.bob_phase) * bob_amp
-
         s = self._screen_rect()
         x = max(s.left(), min(s.right() - self.width(), int(self.pos_f.x())))
-        y = max(s.top(), min(s.bottom() - self.height(), int(self.pos_f.y() + bob)))
+        y = max(s.top(), min(s.bottom() - self.height(), int(self.pos_f.y())))
         self.move(x, y)
 
         self.update()
@@ -487,29 +541,50 @@ class Pet(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
 
-        breath = 1.0 + 0.04 * math.sin(self.breath_phase)
-        if self.state == State.EXCITED:
-            breath *= 1.05
-        sw = int(self.sprite.width() * breath)
-        sh = int(self.sprite.height() * breath)
-        sprite = self.sprite.scaled(
-            sw, sh,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        if self.flip:
-            sprite = sprite.transformed(QTransform().scale(-1, 1))
+        # 점프 크기. 평소에도 뛰는 느낌 + EXCITED 면 더 크게.
+        base_amp = 12.0 if self.state == State.EXCITED else 7.0
+        if self.state == State.SLEEPING:
+            base_amp = 1.5
 
-        cx = (self.width() - sprite.width()) // 2
-        cy = (self.height() - sprite.height()) // 2
-        p.drawPixmap(cx, cy, sprite)
+        for m in self.pack:
+            breath = 1.0 + 0.04 * math.sin(m.breath_phase)
+            if self.state == State.EXCITED:
+                breath *= 1.05
+            sw = int(m.pixmap.width() * breath)
+            sh = int(m.pixmap.height() * breath)
+            sprite = m.pixmap.scaled(
+                sw, sh,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            if self.flip:
+                sprite = sprite.transformed(QTransform().scale(-1, 1))
+
+            # bob: sin 의 양수부만 → 땅에 붙어 있다가 위로 살짝 점프
+            s_phase = math.sin(m.bob_phase)
+            hop = max(0.0, s_phase) * base_amp * m.bob_scale
+
+            slot_w = m.pixmap.width()
+            ax = m.x_anchor
+            if self.flip:
+                ax = self.pack_w - m.x_anchor - slot_w
+            # breath 로 폭이 변하므로 슬롯 안 가운데 정렬
+            ax += (slot_w - sprite.width()) // 2
+            cx = WIDGET_PAD + ax
+            # 바닥 정렬 (가장 큰 강아지 발 = pack_h). 위로 hop 만큼 들림.
+            cy = WIDGET_PAD + (self.pack_h - sprite.height()) - hop + 12
+            p.drawPixmap(int(cx), int(cy), sprite)
 
         if self.state == State.SLEEPING:
-            self._draw_zzz(p, cx + sprite.width() - 30, cy + 20)
+            self._draw_zzz(
+                p,
+                WIDGET_PAD + self.pack_w - 30,
+                WIDGET_PAD + 20,
+            )
 
     def _draw_zzz(self, p: QPainter, x: int, y: int) -> None:
         p.setPen(QColor(80, 80, 200))
-        offset = int(math.sin(self.bob_phase) * 4)
+        offset = int(math.sin(self.pack[0].bob_phase) * 4)
         p.setFont(QFont("Helvetica", 22, QFont.Weight.Bold))
         p.drawText(x, y + offset, "Z")
         p.setFont(QFont("Helvetica", 16, QFont.Weight.Bold))

@@ -42,17 +42,25 @@ else
     echo "[3/5] macmon 이미 설치됨, 스킵"
 fi
 
-if [ ! -f assets/dog.png ]; then
+PACK_OK=true
+for f in dog_yorkie.png dog_jindo.png dog_bichon.png; do
+    [ -f "assets/$f" ] || PACK_OK=false
+done
+if [ -f assets/dog.png ] || [ "$PACK_OK" = true ]; then
+    echo "[4/5] 펫 스프라이트 이미 있음, 스킵"
+else
     echo
-    echo "[4/5] assets/dog.png 가 없습니다."
+    echo "[4/5] 펫 스프라이트가 없습니다."
     echo
-    echo "강아지(또는 펫) 사진을 준비한 뒤 다음 명령어로 스프라이트를 만드세요:"
-    echo "  ./venv/bin/python prep_sprite.py /path/to/your/photo.png"
+    echo "옵션 A) 한 마리 (한 사진에 펫 한 마리):"
+    echo "  ./venv/bin/python prep_sprite.py /path/to/photo.png"
+    echo
+    echo "옵션 B) 세 마리 무리 (한 사진에 펫 3마리 나란히):"
+    echo "  ./venv/bin/python prep_pack_sprites.py /path/to/photo.png"
+    echo "  (좌→우 순서로 yorkie / jindo / bichon 으로 분리됩니다.)"
     echo
     echo "그 후 다시 ./setup.sh 실행하시면 .app 까지 빌드됩니다."
     exit 0
-else
-    echo "[4/5] assets/dog.png 이미 있음, 스킵"
 fi
 
 echo "[5/5] 바탕화면에 DesktopPet.app 빌드 중..."
